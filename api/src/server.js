@@ -10,34 +10,23 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const PORT = process.env.PORT || 3000;
+// Render ມັກប្រើ Port 10000 ជាលំនាំដើម ប្រសិនបើមិនបានកំណត់ក្នុង Env
+const PORT = process.env.PORT || 10000;
 
 // --- Import Routes ---
 const authRoutes = require('./routes/auth.routes');
 const membersRoutes = require('./routes/members.routes');
-
-
-//--- Import Daily Cost Routes ---
 const dailyCostRoutes = require('./routes/dailyCost.routes');
-app.use('/api/v1/daily-costs', dailyCostRoutes);
-
-//--- Import Meal Status Routes ---
 const mealStatusRoutes = require('./routes/mealStatus.routes');
-app.use('/api/v1/meal-statuses', mealStatusRoutes);
+const billSharingRoutes = require('./routes/billSharing.routes');
+const userRoutes = require('./routes/users.routes');
 
 // --- Register Routes ---
+app.use('/api/v1/daily-costs', dailyCostRoutes);
+app.use('/api/v1/meal-statuses', mealStatusRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/members', membersRoutes);
-
-
-// --- Import Bill Sharing Routes ---
-const billSharingRoutes = require('./routes/billSharing.routes');
 app.use('/api/v1/bills', billSharingRoutes);
-
-// --- Import User Routes ---
-const userRoutes = require('./routes/users.routes'); // ឈ្មោះឯកសារតាមที่คุณបានរក្សាទុក
-
-// ត្រូវធានាថាមានការភ្ជាប់ Path Prefix នេះ៖
 app.use('/api/v1/users', userRoutes);
 
 // --- Swagger Configuration ---
@@ -49,10 +38,11 @@ const swaggerOptions = {
             version: '1.0.0',
             description: 'API documentation for managing household meals, daily costs, and bill sharing.',
         },
+        // កែចំណុចនេះ៖ ប្រើប្រាស់ Array ស្ራល ឬ Relative Path ដើម្បីឱ្យវាត្រូវទាំង Local និង Render
         servers: [{
-            url: `http://localhost:${PORT}`,
-            description: 'Local Development Server',
-        }],
+            url: process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`,
+            description: 'Active Server (Local or Render)',
+        }, ],
         components: {
             securitySchemes: {
                 bearerAuth: {
@@ -63,32 +53,18 @@ const swaggerOptions = {
             },
         },
     },
-    apis: ['./src/server.js', './src/routes/*.js'], // អាន JSDoc ទាំងក្នុង server.js និង ថត routes
+    apis: ['./src/server.js', './src/routes/*.js'],
 };
 
 const swaggerDocs = swaggerJsdoc(swaggerOptions);
 
-// Swagger UI Route ស្រដៀង Spring Boot
 app.use('/swagger-ui', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 
-// Redirect root ទៅកាន់ swagger-ui
 app.get('/', (req, res) => {
     res.redirect('/swagger-ui');
 });
 
-// --- API Endpoints (Test route) ---
-/**
- * @swagger
- * /api/v1/users:
- *   get:
- *     summary: Get all system users
- *     description: Retrieve a list of all users/members in the household database.
- *     responses:
- *       200:
- *         description: A list of users.
- *       500:
- *         description: Internal server error.
- */
+// --- Test Route ---
 app.get('/api/v1/users', async(req, res) => {
     try {
         const users = await prisma.user.findMany();
@@ -103,7 +79,8 @@ app.get('/api/v1/users', async(req, res) => {
     }
 });
 
-app.listen(PORT, () => {
+// បន្ថែម '0.0.0.0' ដើម្បីឱ្យ Render Server ស្គាល់ Host ត្រឹមត្រូវ
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`Swagger UI available at http://localhost:${PORT}/swagger-ui`);
 });
