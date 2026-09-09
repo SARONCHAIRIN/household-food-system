@@ -1,0 +1,121 @@
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           BigInt   @id @default(autoincrement())
+  name         String   @db.VarChar(255)
+  username     String   @db.VarChar(255)
+  email        String   @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         Role     @default(USER)
+  status       Status   @default(ACTIVE)
+  joinedAt     DateTime? @map("joined_at") @db.Date
+  inactiveAt   DateTime? @map("inactive_at") @db.Date
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  dailyCosts   DailyFoodCost[]
+  mealStatuses MealStatus[]
+  weekSummaries MemberWeekSummary[]
+  auditLogs    AuditLog[]
+
+  @@map("USERS")
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum Status {
+  ACTIVE
+  INACTIVE
+}
+
+model DailyFoodCost {
+  id                       BigInt             @id @default(autoincrement())
+  date                     DateTime           @db.Date
+  foodPrice                Decimal?           @map("food_price") @db.Decimal(10, 2)
+  ingredientPrice          Decimal?           @map("ingredient_price") @db.Decimal(10, 2)
+  eatCount                 Int?               @map("eat_count")
+  totalMemberCount         Int?               @map("total_member_count")
+  costFoodPerPerson        Decimal?           @map("cost_food_per_person") @db.Decimal(10, 2)
+  costIngredientPerPerson  Decimal?           @map("cost_ingredient_per_person") @db.Decimal(10, 2)
+  calculationStatus        CalculationStatus  @map("calculation_status")
+  confirmedAt              DateTime?          @map("confirmed_at")
+  createdBy                BigInt?            @map("created_by")
+  creator                  User?              @relation(fields: [createdBy], references: [id])
+  createdAt                DateTime           @default(now()) @map("created_at")
+  updatedAt                DateTime           @default(now()) @updatedAt @map("updated_at")
+
+  @@map("DAILY_FOOD_COST")
+}
+
+enum CalculationStatus {
+  PENDING
+  COMPLETED
+}
+
+model MealStatus {
+  id              BigInt           @id @default(autoincrement())
+  memberId        BigInt           @map("member_id")
+  member          User             @relation(fields: [memberId], references: [id])
+  date            DateTime         @db.Date
+  status          MealChoice       @default(EAT)
+  confirmationType ConfirmationType @map("confirmation_type")
+  confirmedAt     DateTime?        @map("confirmed_at")
+  costFood        Decimal?         @map("cost_food") @db.Decimal(10, 2)
+  costIngredient  Decimal?         @map("cost_ingredient") @db.Decimal(10, 2)
+  costTotal       Decimal?         @map("cost_total") @db.Decimal(10, 2)
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  @@map("MEAL_STATUS")
+}
+
+enum MealChoice {
+  EAT
+  NOT_EAT
+}
+
+enum ConfirmationType {
+  AUTO
+  MANUAL
+}
+
+model MemberWeekSummary {
+  id                 BigInt   @id @default(autoincrement())
+  memberId           BigInt   @map("member_id")
+  member             User     @relation(fields: [memberId], references: [id])
+  weekStart          DateTime @map("week_start") @db.Date
+  weekEnd            DateTime @map("week_end") @db.Date
+  eatDays            Int?     @map("eat_days")
+  dontEatDays        Int?     @map("dont_eat_days")
+  totalFoodCost      Decimal? @map("total_food_cost") @db.Decimal(10, 2)
+  totalIngredientCost Decimal? @map("total_ingredient_cost") @db.Decimal(10, 2)
+  totalCost          Decimal? @map("total_cost") @db.Decimal(10, 2)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("MEMBER_WEEK_SUMMARY")
+}
+
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  userId     BigInt   @map("user_id")
+  user       User     @relation(fields: [userId], references: [id])
+  action     String   @db.VarChar(255)
+  entityType String?  @map("entity_type") @db.VarChar(100)
+  entityId   BigInt?  @map("entity_id")
+  oldValue   String?  @map("old_value") @db.Text
+  newValue   String?  @map("new_value") @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("audit_log")
+}

@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:lts
+    container_name: FoodToday
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 312007
+      MYSQL_DATABASE: FOODTODAY
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  adminer:
+    image: adminer
+    container_name: AdminerFoodToday
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+
+volumes:
+  mysql_data:
