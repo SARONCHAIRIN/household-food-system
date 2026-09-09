@@ -19,16 +19,29 @@ const { verifyToken, verifyAdmin } = require('../middleware/auth.middleware');
  */
 router.get('/', verifyToken, async(req, res) => {
     try {
-        const [rows] = await db.pool.query('SELECT * FROM DAILY_FOOD_COST ORDER BY date DESC');
+        const result = await db.pool.query(
+            'SELECT * FROM "DAILY_FOOD_COST" ORDER BY date DESC'
+        );
+
+        const rows = result.rows;
+
         const formatted = rows.map(r => ({
             ...r,
             id: r.id.toString(),
-            createdBy: r.created_by ? r.created_by.toString() : null
+            createdBy: r.created_by ?
+                r.created_by.toString() :
+                null
         }));
+
         res.json(formatted);
+
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        console.error('GET daily costs error:', error);
+
+        res.status(500).json({
+            error: 'Internal Server Error',
+            message: error.message
+        });
     }
 });
 
@@ -70,34 +83,104 @@ router.get('/', verifyToken, async(req, res) => {
  */
 router.post('/', verifyAdmin, async(req, res) => {
     try {
-        const { date, foodPrice, ingredientPrice, eatCount, totalMemberCount } = req.body;
+        const {
+            date,
+            foodPrice,
+            ingredientPrice,
+            eatCount,
+            totalMemberCount
+        } = req.body;
+
         const createdBy = req.user.id;
 
-        const costFoodPerPerson = eatCount > 0 ? (foodPrice / eatCount).toFixed(2) : 0;
-        const costIngredientPerPerson = totalMemberCount > 0 ? (ingredientPrice / totalMemberCount).toFixed(2) : 0;
+        // Validate date
+        if (!date) {
+            return res.status(400).json({
+                error: 'Date is required'
+            });
+        }
+
+        // Convert values to numbers
+        const foodPriceValue = Number(foodPrice) || 0;
+        const ingredientPriceValue = Number(ingredientPrice) || 0;
+        const eatCountValue = Number(eatCount) || 0;
+        const totalMemberCountValue = Number(totalMemberCount) || 0;
+
+        // Calculate food cost per eater
+        const costFoodPerPerson =
+            eatCountValue > 0 ?
+            Number((foodPriceValue / eatCountValue).toFixed(2)) :
+            0;
+
+        // Calculate ingredient cost shared by all members
+        const costIngredientPerPerson =
+            totalMemberCountValue > 0 ?
+            Number(
+                (ingredientPriceValue / totalMemberCountValue).toFixed(2)
+            ) :
+            0;
+
         const calculationStatus = 'COMPLETED';
 
         const query = `
-            INSERT INTO DAILY_FOOD_COST 
-            (date, food_price, ingredient_price, eat_count, total_member_count, cost_food_per_person, cost_ingredient_per_person, calculation_status, created_by, confirmed_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            INSERT INTO "DAILY_FOOD_COST"
+            (
+                date,
+                food_price,
+                ingredient_price,
+                eat_count,
+                total_member_count,
+                cost_food_per_person,
+                cost_ingredient_per_person,
+                calculation_status,
+                created_by,
+                confirmed_at
+            )
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6,
+                $7,
+                $8,
+                $9,
+                CURRENT_TIMESTAMP
+            )
+            RETURNING id
         `;
+
         const values = [
-            date, foodPrice || 0, ingredientPrice || 0, eatCount || 0,
-            totalMemberCount || 0, costFoodPerPerson, costIngredientPerPerson,
-            calculationStatus, createdBy
+            date,
+            foodPriceValue,
+            ingredientPriceValue,
+            eatCountValue,
+            totalMemberCountValue,
+            costFoodPerPerson,
+            costIngredientPerPerson,
+            calculationStatus,
+            createdBy
         ];
 
-        const [result] = await db.pool.query(query, values);
+        const result = await db.pool.query(query, values);
+
+        const insertedId = result.rows[0].id;
+
         res.status(201).json({
             message: 'Daily food cost recorded successfully',
-            id: result.insertId.toString(),
+            id: insertedId.toString(),
             costFoodPerPerson,
             costIngredientPerPerson
         });
+
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        console.error('POST daily cost error:', error);
+
+        res.status(500).json({
+            error: 'Internal Server Error',
+            message: error.message
+        });
     }
 });
 

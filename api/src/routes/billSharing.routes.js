@@ -36,105 +36,176 @@ router.get('/summary', verifyAdmin, async(req, res) => {
     try {
         const { startDate, endDate } = req.query;
 
+        // Validate dates
         if (!startDate || !endDate) {
-            return res.status(400).json({ error: 'Please provide startDate and endDate (YYYY-MM-DD)' });
+            return res.status(400).json({
+                error: 'Please provide startDate and endDate (YYYY-MM-DD)'
+            });
         }
 
-        // ១. ទាញយកសមាជិកទាំងអស់ដើម្បីពិនិត្យ Status (ACTIVE, INACTIVE, AWAY)
-        const [allMembers] = await db.pool.query('SELECT id, name, username, email, status FROM USERS');
+        // 1. Get all members
+        const membersResult = await db.pool.query(`
+            SELECT id, name, username, email, status
+            FROM "USERS"
+            ORDER BY id ASC
+        `);
+
+        const allMembers = membersResult.rows;
 
         if (allMembers.length === 0) {
-            return res.json({ message: 'No members found', summary: [] });
+            return res.json({
+                message: 'No members found',
+                summary: []
+            });
         }
 
-        // រាប់เฉพาะសមាជិកដែល ACTIVE យកមកចែកថ្លៃគ្រឿងទេសរួម
-        const activeMembers = allMembers.filter(m => m.status === 'ACTIVE');
+        // Only ACTIVE members share ingredient costs
+        const activeMembers = allMembers.filter(
+            member => member.status === 'ACTIVE'
+        );
+
         const activeMemberCount = activeMembers.length;
 
-        // ២. ទាញយកតម្លៃចំណាយប្រចាំថ្ងៃក្នុងចន្លោះពេលកំណត់
-        const [dailyCosts] = await db.pool.query(
-            'SELECT * FROM DAILY_FOOD_COST WHERE date BETWEEN ? AND ?', [startDate, endDate]
+        // 2. Get daily costs for selected period
+        const dailyCostsResult = await db.pool.query(
+            `
+            SELECT *
+            FROM "DAILY_FOOD_COST"
+            WHERE date BETWEEN $1 AND $2
+            ORDER BY date ASC
+            `, [startDate, endDate]
         );
+
+        const dailyCosts = dailyCostsResult.rows;
 
         let totalFoodCostPool = 0;
         let totalIngredientCostPool = 0;
 
         dailyCosts.forEach(cost => {
-            totalFoodCostPool += parseFloat(cost.food_price || 0);
-            totalIngredientCostPool += parseFloat(cost.ingredient_price || 0);
+            totalFoodCostPool += Number(cost.food_price || 0);
+            totalIngredientCostPool += Number(cost.ingredient_price || 0);
         });
 
-        // ៣. ទាញយកស្ថានភាពហូបបាយ EAT
-        const [mealStatuses] = await db.pool.query(
-            'SELECT * FROM MEAL_STATUS WHERE date BETWEEN ? AND ? AND status = "EAT"', [startDate, endDate]
+        // 3. Get EAT meal statuses
+        const mealStatusesResult = await db.pool.query(
+            `
+            SELECT *
+            FROM "MEAL_STATUS"
+            WHERE date BETWEEN $1 AND $2
+              AND status = 'EAT'
+            ORDER BY date ASC
+            `, [startDate, endDate]
         );
 
+        const mealStatuses = mealStatusesResult.rows;
+
+        // Count eating days for each member
         const memberEatCounts = {};
-        allMembers.forEach(m => {
-            memberEatCounts[m.id.toString()] = 0;
+
+        allMembers.forEach(member => {
+            memberEatCounts[member.id.toString()] = 0;
         });
 
-        mealStatuses.forEach(ms => {
-            const mId = ms.member_id.toString();
-            if (memberEatCounts[mId] !== undefined) {
-                memberEatCounts[mId] += 1;
+        mealStatuses.forEach(meal => {
+            const memberId = meal.member_id.toString();
+
+            if (memberEatCounts[memberId] !== undefined) {
+                memberEatCounts[memberId] += 1;
             }
         });
 
-        // ថ្លៃគ្រឿងទេសក្នុងមនុស្សម្នាក់ គណនាเฉพาะសមាជិក ACTIVE
-        const ingredientCostPerPerson = activeMemberCount > 0 ? (totalIngredientCostPool / activeMemberCount) : 0;
+        // 4. Ingredient cost shared by ACTIVE members
+        const ingredientCostPerPerson =
+            activeMemberCount > 0 ?
+            totalIngredientCostPool / activeMemberCount :
+            0;
 
-        const memberBillDetails = allMembers.map(m => {
-            const mId = m.id.toString();
+        // 5. Calculate each member's bill
+        const memberBillDetails = allMembers.map(member => {
+            const memberId = member.id.toString();
+
             let personalFoodCost = 0;
 
-            // បើ Member មិនមែន ACTIVE (ឧ. AWAY ឬ INACTIVE) មិនគិតថ្លៃគ្រឿងទេសទេ
-            const isEligibleForIngredient = m.status === 'ACTIVE';
-            const memberIngredientCost = isEligibleForIngredient ? ingredientCostPerPerson : 0;
+            // Only ACTIVE members pay ingredient cost
+            const isEligibleForIngredient =
+                member.status === 'ACTIVE';
 
+            const memberIngredientCost =
+                isEligibleForIngredient ?
+                ingredientCostPerPerson :
+                0;
+
+            // Calculate food cost day by day
             dailyCosts.forEach(cost => {
-                // រាប់ចំនួនអ្នកហូបពិតប្រាកដក្នុងថ្ងៃនោះ
-                const eatersOnThisDay = mealStatuses.filter(ms =>
-                    new Date(ms.date).toISOString().slice(0, 10) === new Date(cost.date).toISOString().slice(0, 10) &&
-                    ms.status === 'EAT'
-                );
+                const costDate = new Date(cost.date)
+                    .toISOString()
+                    .slice(0, 10);
+
+                const eatersOnThisDay = mealStatuses.filter(meal => {
+                    const mealDate = new Date(meal.date)
+                        .toISOString()
+                        .slice(0, 10);
+
+                    return (
+                        mealDate === costDate &&
+                        meal.status === 'EAT'
+                    );
+                });
 
                 const actualEatCount = eatersOnThisDay.length;
-                const ateOnThisDay = eatersOnThisDay.some(ms => ms.member_id.toString() === mId);
+
+                const ateOnThisDay = eatersOnThisDay.some(
+                    meal => meal.member_id.toString() === memberId
+                );
 
                 if (ateOnThisDay && actualEatCount > 0) {
-                    personalFoodCost += parseFloat(cost.food_price) / actualEatCount;
+                    personalFoodCost +=
+                        Number(cost.food_price || 0) /
+                        actualEatCount;
                 }
             });
 
-            const totalOwed = personalFoodCost + memberIngredientCost;
+            const totalOwed =
+                personalFoodCost + memberIngredientCost;
 
             return {
-                memberId: mId,
-                name: m.name,
-                username: m.username,
-                status: m.status, // បង្ហាញ Status របស់សមាជិក
-                daysEaten: memberEatCounts[mId],
+                memberId,
+                name: member.name,
+                username: member.username,
+                status: member.status,
+                daysEaten: memberEatCounts[memberId],
                 foodCost: personalFoodCost.toFixed(2),
                 ingredientCost: memberIngredientCost.toFixed(2),
                 totalDue: totalOwed.toFixed(2)
             };
         });
 
+        // 6. Return summary
         res.json({
-            period: { startDate, endDate },
+            period: {
+                startDate,
+                endDate
+            },
+
             totalMembers: allMembers.length,
+
             activeMembersCount: activeMemberCount,
+
             poolSummary: {
                 totalFoodPrice: totalFoodCostPool.toFixed(2),
                 totalIngredientPrice: totalIngredientCostPool.toFixed(2)
             },
+
             memberSummaries: memberBillDetails
         });
 
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        console.error('GET bill summary error:', error);
+
+        res.status(500).json({
+            error: 'Internal Server Error',
+            message: error.message
+        });
     }
 });
 
