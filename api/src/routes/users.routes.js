@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../prismaClient');
+const db = require('../prismaClient'); // ប្រើប្រាស់ db ជំនួសឱ្យ prisma
 const { verifyAdmin } = require('../middleware/auth.middleware');
 
 /**
@@ -41,19 +41,27 @@ router.patch('/:id/status', verifyAdmin, async(req, res) => {
             return res.status(400).json({ error: 'Invalid status. Use ACTIVE, INACTIVE, or AWAY' });
         }
 
-        const [result] = await db.pool.query(
-            'UPDATE USERS SET status = ? WHERE id = ?', [status, id]
-        );
+        // ប្រើ db.user ជំនួស prisma.user
+        const userExists = await db.user.findUnique({
+            where: { id: String(id) }
+        });
 
-        if (result.affectedRows === 0) {
+        if (!userExists) {
             return res.status(404).json({ error: 'Member not found in database' });
         }
 
-        res.json({ message: `Member status updated to ${status} successfully` });
+        const updatedUser = await db.user.update({
+            where: { id: String(id) },
+            data: { status: status },
+        });
+
+        res.json({ message: `Member status updated to ${status} successfully`, updatedUser });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        console.error("Error updating user status:", error);
+        res.status(500).json({ error: 'Internal Server Error', details: error.message });
     }
 });
+
+module.exports = router;
 
 module.exports = router;
