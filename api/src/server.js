@@ -20,6 +20,7 @@ const dailyCostRoutes = require('./routes/dailyCost.routes');
 const mealStatusRoutes = require('./routes/mealStatus.routes');
 const billSharingRoutes = require('./routes/billSharing.routes');
 const userRoutes = require('./routes/users.routes');
+const depositsRoutes = require('./routes/deposits.routes');
 
 // --- Register Routes ---
 app.use('/api/v1/daily-costs', dailyCostRoutes);
@@ -28,6 +29,8 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/members', membersRoutes);
 app.use('/api/v1/bills', billSharingRoutes);
 app.use('/api/v1/users', userRoutes);
+app.use('/api/v1', depositsRoutes);
+
 
 // --- Swagger Configuration ---
 const swaggerOptions = {

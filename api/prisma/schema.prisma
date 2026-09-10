@@ -119,3 +119,16 @@ model AuditLog {
 
   @@map("audit_log")
 }
+
+model MemberDeposit {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  amount      Float    // ចំនួនប្រាក់កក់ (ឧ. 20$)
+  type        String   // 'DEPOSIT' (កក់ទុក) ឬ 'DEDUCTION' (កាត់ទូទាត់ថ្ងៃគណនី)
+  note        String?  // កំណត់សម្គាល់ (ឧ. "កក់ប្រាក់ថ្លៃម្ហូបប្រចាំខែ")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("member_deposits")
+}
