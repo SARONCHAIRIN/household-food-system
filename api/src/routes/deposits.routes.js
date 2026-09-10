@@ -162,4 +162,91 @@ router.get('/deposits/balance', verifyToken, async(req, res) => {
     }
 });
 
+
+/**
+ * @swagger
+ * /api/v1/admin/deposits/all:
+ *   get:
+ *     summary: Get deposit balance and history for all members
+ *     description: Returns every member's current deposit balance, with optional full transaction history. Restricted to Admin.
+ *     tags: [Deposits]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: includeHistory
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: Set true to include each member's full transaction list
+ *     responses:
+ *       200:
+ *         description: All members' deposit balances retrieved
+ *       403:
+ *         description: Admin resource access denied
+ */
+router.get('/admin/deposits/all', verifyAdmin, async(req, res) => {
+    try {
+        const includeHistory = req.query.includeHistory === 'true';
+
+        // ១. ទាញយកសមាជិកទាំងអស់
+        const membersResult = await db.pool.query(`
+            SELECT id, name, username, status FROM "USERS" ORDER BY id ASC
+        `);
+        const allMembers = membersResult.rows;
+
+        // ២. ទាញយក transaction ទាំងអស់តែម្តង (efficient - 1 query)
+        const depositsResult = await db.pool.query(`
+            SELECT id, user_id, amount, type, note, created_at
+            FROM member_deposits
+            ORDER BY created_at DESC
+        `);
+        const allDeposits = depositsResult.rows;
+
+        // ៣. Group តាម user_id
+        const summaries = allMembers.map(member => {
+            const memberId = member.id.toString();
+            const memberDeposits = allDeposits.filter(
+                d => d.user_id.toString() === memberId
+            );
+
+            let balance = 0;
+            memberDeposits.forEach(item => {
+                const amt = parseFloat(item.amount);
+                if (item.type === 'DEPOSIT') balance += amt;
+                if (item.type === 'DEDUCTION') balance -= amt;
+            });
+
+            const summary = {
+                userId: memberId,
+                name: member.name,
+                username: member.username,
+                status: member.status,
+                balance: parseFloat(balance.toFixed(2)),
+                totalTransactions: memberDeposits.length
+            };
+
+            if (includeHistory) {
+                summary.history = memberDeposits.map(d => ({
+                    id: d.id,
+                    amount: parseFloat(d.amount),
+                    type: d.type,
+                    note: d.note,
+                    createdAt: d.created_at
+                }));
+            }
+
+            return summary;
+        });
+
+        res.status(200).json({
+            totalMembers: allMembers.length,
+            deposits: summaries
+        });
+
+    } catch (error) {
+        console.error("Error fetching all deposits:", error);
+        res.status(500).json({ error: 'Internal Server Error', details: error.message });
+    }
+});
 module.exports = router;
