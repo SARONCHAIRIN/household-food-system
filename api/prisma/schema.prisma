@@ -36,6 +36,7 @@ enum Role {
 enum Status {
   ACTIVE
   INACTIVE
+  AWAY
 }
 
 model DailyFoodCost {
@@ -76,6 +77,7 @@ model MealStatus {
   createdAt       DateTime         @default(now()) @map("created_at")
   updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at")
 
+  @@unique([memberId, date])
   @@map("MEAL_STATUS")
 }
 

@@ -22,6 +22,10 @@ const billSharingRoutes = require('./routes/billSharing.routes');
 const userRoutes = require('./routes/users.routes');
 const depositsRoutes = require('./routes/deposits.routes');
 
+// --- Import Background Jobs & DB Helpers ---
+const { ensureConstraints } = require('./db/ensureConstraints');
+const { startAutoMealAttendanceJob } = require('./jobs/autoMealAttendance');
+
 // --- Register Routes ---
 app.use('/api/v1/daily-costs', dailyCostRoutes);
 app.use('/api/v1/meal-statuses', mealStatusRoutes);
@@ -83,7 +87,16 @@ app.get('/api/v1/users', async(req, res) => {
 });
 
 // បន្ថែម '0.0.0.0' ដើម្បីឱ្យ Render Server ស្គាល់ Host ត្រឹមត្រូវ
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', async () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`Swagger UI available at http://localhost:${PORT}/swagger-ui`);
+
+    try {
+        await ensureConstraints();
+    } catch (err) {
+        console.error('Warning: Error verifying database constraints on startup:', err.message);
+    }
+
+    // Start background scheduled cron jobs
+    startAutoMealAttendanceJob();
 });

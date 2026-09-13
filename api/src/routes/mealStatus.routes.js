@@ -65,12 +65,37 @@ router.get('/', verifyToken, async(req, res) => {
  *         description: Meal status recorded successfully
  *       400:
  *         description: Invalid data or cut-off time passed
+ *       403:
+ *         description: Forbidden - Only active members can set meal attendance
  */
 router.post('/', verifyToken, async(req, res) => {
     try {
         const { date, status } = req.body;
         const memberId = req.user.id;
         const confirmationType = 'MANUAL';
+
+        // 1. Retrieve current User Account Status from DB
+        const userRes = await db.pool.query(
+            'SELECT id, status FROM "USERS" WHERE id = $1 LIMIT 1',
+            [memberId]
+        );
+
+        if (userRes.rows.length === 0) {
+            return res.status(404).json({
+                error: 'User not found'
+            });
+        }
+
+        const userStatus = userRes.rows[0].status;
+
+        // 2. Validate Active Eligibility:
+        // Only ACTIVE members can set or update meal attendance.
+        // Role Independence: Applies to all users (including ADMIN) based on their account status.
+        if (userStatus !== 'ACTIVE') {
+            return res.status(403).json({
+                error: `Only active members can set meal attendance. Your account status is currently ${userStatus || 'INACTIVE'}.`
+            });
+        }
 
         // Validate status
         if (!['EAT', 'NOT_EAT'].includes(status)) {
@@ -86,70 +111,90 @@ router.post('/', verifyToken, async(req, res) => {
             });
         }
 
-        // Convert date safely
-        const targetDateStr = new Date(date).toISOString().slice(0, 10);
-        const todayStr = new Date().toISOString().slice(0, 10);
+        const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
+        const parsedDate = new Date(date);
+        if (isNaN(parsedDate.getTime())) {
+            return res.status(400).json({
+                error: 'Invalid date format. Use YYYY-MM-DD'
+            });
+        }
 
-        // Cut-off time: 12:00 PM
+        const targetDateStr = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
+            ? date
+            : new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(parsedDate);
+        const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+
+        // Cut-off time check (default 12:00 PM in target timezone, bypassable by ADMIN)
         if (targetDateStr === todayStr) {
-            const currentHour = new Date().getHours();
-            const cutoffHour = 12;
+            const currentHour = parseInt(
+                new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(new Date()),
+                10
+            );
+            const cutoffHour = process.env.CUTOFF_HOUR ? parseInt(process.env.CUTOFF_HOUR, 10) : 12;
 
-            if (currentHour >= cutoffHour) {
+            if (currentHour >= cutoffHour && req.user.role !== 'ADMIN') {
                 return res.status(400).json({
-                    error: 'Cut-off time passed! You cannot change your meal status after 12:00 PM.'
+                    error: `Cut-off time passed! You cannot change your meal status after ${cutoffHour}:00.`
                 });
             }
         }
 
-        // Check existing record
+        // Check if record already exists (to provide proper 200/201 status and messaging)
         const existingResult = await db.pool.query(
-            `SELECT id
+            `SELECT id, confirmation_type
              FROM "MEAL_STATUS"
              WHERE member_id = $1
              AND date = $2
-             LIMIT 1`, [memberId, date]
+             LIMIT 1`,
+            [memberId, targetDateStr]
         );
 
-        const existing = existingResult.rows;
+        const isUpdate = existingResult.rows.length > 0;
 
-        // UPDATE existing record
-        if (existing.length > 0) {
-            await db.pool.query(
-                `UPDATE "MEAL_STATUS"
-                 SET status = $1,
-                     confirmation_type = $2,
-                     confirmed_at = CURRENT_TIMESTAMP,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE member_id = $3
-                 AND date = $4`, [
-                    status,
-                    confirmationType,
-                    memberId,
-                    date
-                ]
-            );
-
-            return res.json({
-                message: 'Meal status updated successfully'
-            });
-        }
-
-        // INSERT new record
-        await db.pool.query(
-            `INSERT INTO "MEAL_STATUS"
-                (member_id, date, status, confirmation_type, confirmed_at)
-             VALUES
-                ($1, $2, $3, $4, CURRENT_TIMESTAMP)`, [
-                memberId,
+        // Atomic UPSERT:
+        // - If record exists (whether AUTO or MANUAL), update status to choice and set confirmation_type = 'MANUAL'
+        // - If no record exists, insert with confirmation_type = 'MANUAL'
+        const upsertQuery = `
+            INSERT INTO "MEAL_STATUS" (
+                member_id,
                 date,
                 status,
-                confirmationType
-            ]
-        );
+                confirmation_type,
+                confirmed_at,
+                created_at,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (member_id, date)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                confirmation_type = 'MANUAL',
+                confirmed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING id, member_id, date, status, confirmation_type, confirmed_at, updated_at
+        `;
 
-        return res.status(201).json({
-            message: 'Meal status recorded successfully'
+        const result = await db.pool.query(upsertQuery, [
+            memberId,
+            targetDateStr,
+            status,
+            confirmationType
+        ]);
+
+        const record = result.rows[0];
+
+        return res.status(isUpdate ? 200 : 201).json({
+            message: isUpdate
+                ? 'Meal status updated successfully'
+                : 'Meal status recorded successfully',
+            record: {
+                id: record.id.toString(),
+                memberId: record.member_id.toString(),
+                date: targetDateStr,
+                status: record.status,
+                confirmationType: record.confirmation_type,
+                confirmedAt: record.confirmed_at
+            }
         });
 
     } catch (error) {

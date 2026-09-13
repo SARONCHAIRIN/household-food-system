@@ -6,7 +6,10 @@
     "scripts": {
         "dev": "nodemon src/server.js",
         "start": "node src/server.js",
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "job:attendance": "node src/jobs/autoMealAttendance.js",
+        "test:attendance": "node test/verifyAutoMealAttendance.js",
+        "test:gate": "node test/verifyActiveMemberGate.js",
+        "test": "node test/verifyAutoMealAttendance.js && node test/verifyActiveMemberGate.js"
     },
     "keywords": [],
     "author": "",
@@ -19,6 +22,7 @@
         "express": "^5.2.1",
         "jsonwebtoken": "^9.0.3",
         "mysql2": "^3.24.4",
+        "node-cron": "^4.6.0",
         "pg": "^8.23.0",
         "swagger-jsdoc": "^6.3.0",
         "swagger-ui-express": "^5.0.1"
