@@ -20,7 +20,7 @@ const toDateStr = (dateVal) => {
  * /api/v1/bills/summary:
  *   get:
  *     summary: Calculate total cost sharing per member for a specific month or period
- *     description: Automatically calculates food cost and ingredient cost for active members in KHR and USD. Restricted to Admin.
+ *     tags: [Bills]
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -30,19 +30,15 @@ const toDateStr = (dateVal) => {
  *           type: string
  *           example: "2026-09-01"
  *         required: true
- *         description: Start date (YYYY-MM-DD)
  *       - in: query
  *         name: endDate
  *         schema:
  *           type: string
  *           example: "2026-09-30"
  *         required: true
- *         description: End date (YYYY-MM-DD)
  *     responses:
  *       200:
  *         description: Successfully calculated bill summaries
- *       403:
- *         description: Admin resource access denied
  */
 router.get('/summary', verifyAdmin, async (req, res) => {
     try {
@@ -54,7 +50,6 @@ router.get('/summary', verifyAdmin, async (req, res) => {
             });
         }
 
-        // 1. Get all members
         const membersResult = await db.pool.query(`
             SELECT id, name, username, email, status
             FROM "USERS"
@@ -65,14 +60,13 @@ router.get('/summary', verifyAdmin, async (req, res) => {
         if (allMembers.length === 0) {
             return res.json({
                 message: 'No members found',
-                summary: []
+                memberSummaries: []
             });
         }
 
         const activeMembers = allMembers.filter(m => m.status === 'ACTIVE');
         const activeMemberCount = activeMembers.length;
 
-        // 2. Get daily costs for selected period
         const dailyCostsResult = await db.pool.query(
             `SELECT * FROM "DAILY_FOOD_COST" WHERE date BETWEEN $1 AND $2 ORDER BY date ASC`,
             [startDate, endDate]
@@ -83,8 +77,8 @@ router.get('/summary', verifyAdmin, async (req, res) => {
         let totalIngredientCostPoolKHR = 0;
 
         dailyCosts.forEach(cost => {
-            const foodAmt = Number(cost.food_price || 0);
-            const ingAmt = Number(cost.ingredient_price || 0);
+            const foodAmt = Number(cost.food_price || cost.foodPrice || 0);
+            const ingAmt = Number(cost.ingredient_price || cost.ingredientPrice || 0);
             const currency = cost.currency || 'KHR';
             const rate = Number(cost.exchange_rate || DEFAULT_RATE);
 
@@ -92,7 +86,6 @@ router.get('/summary', verifyAdmin, async (req, res) => {
             totalIngredientCostPoolKHR += convertAmount(ingAmt, currency, 'KHR', rate);
         });
 
-        // 3. Get EAT meal statuses
         const mealStatusesResult = await db.pool.query(
             `SELECT * FROM "MEAL_STATUS" WHERE date BETWEEN $1 AND $2 AND status = 'EAT' ORDER BY date ASC`,
             [startDate, endDate]
@@ -111,12 +104,10 @@ router.get('/summary', verifyAdmin, async (req, res) => {
             }
         });
 
-        // 4. Ingredient cost shared by ACTIVE members (in KHR)
         const ingredientCostPerPersonKHR = activeMemberCount > 0
             ? totalIngredientCostPoolKHR / activeMemberCount
             : 0;
 
-        // 5. Calculate each member's bill
         const memberBillDetails = allMembers.map(member => {
             const memberId = member.id.toString();
             let personalFoodCostKHR = 0;
@@ -126,7 +117,7 @@ router.get('/summary', verifyAdmin, async (req, res) => {
                 const costDateStr = toDateStr(cost.date);
                 const currency = cost.currency || 'KHR';
                 const rate = Number(cost.exchange_rate || DEFAULT_RATE);
-                const dayFoodPriceKHR = convertAmount(Number(cost.food_price || 0), currency, 'KHR', rate);
+                const dayFoodPriceKHR = convertAmount(Number(cost.food_price || cost.foodPrice || 0), currency, 'KHR', rate);
 
                 const eatersOnThisDay = mealStatuses.filter(meal => {
                     const mealDateStr = toDateStr(meal.date);
@@ -164,7 +155,6 @@ router.get('/summary', verifyAdmin, async (req, res) => {
         const totalFoodUSD = convertAmount(totalFoodCostPoolKHR, 'KHR', 'USD', DEFAULT_RATE);
         const totalIngredientUSD = convertAmount(totalIngredientCostPoolKHR, 'KHR', 'USD', DEFAULT_RATE);
 
-        // 6. Return summary
         res.json({
             period: { startDate, endDate },
             totalMembers: allMembers.length,
@@ -189,13 +179,11 @@ router.get('/summary', verifyAdmin, async (req, res) => {
     }
 });
 
-
 /**
  * @swagger
  * /api/v1/bills/settle:
  *   post:
- *     summary: Settle bills for a period and deduct from member deposits (Multi-Currency Support)
- *     description: Automatically calculates totalDue in KHR/USD and deducts from member wallet/deposits. Restricted to Admin.
+ *     summary: Settle bills for a period and deduct from member deposits
  *     tags: [Bills]
  *     security:
  *       - bearerAuth: []
@@ -215,6 +203,9 @@ router.get('/summary', verifyAdmin, async (req, res) => {
  *               endDate:
  *                 type: string
  *                 example: "2026-09-30"
+ *     responses:
+ *       200:
+ *         description: Monthly bill settlement processed successfully
  */
 router.post('/settle', verifyAdmin, async (req, res) => {
     const client = await db.pool.connect();
@@ -226,20 +217,17 @@ router.post('/settle', verifyAdmin, async (req, res) => {
 
         await client.query('BEGIN');
 
-        // 1. Get all members
         const membersResult = await client.query(`SELECT id, name, username, status FROM "USERS" ORDER BY id ASC`);
         const allMembers = membersResult.rows;
         const activeMembers = allMembers.filter(m => m.status === 'ACTIVE');
         const activeMemberCount = activeMembers.length;
 
-        // 2. Get daily costs
         const dailyCostsResult = await client.query(
             `SELECT * FROM "DAILY_FOOD_COST" WHERE date BETWEEN $1 AND $2 ORDER BY date ASC`,
             [startDate, endDate]
         );
         const dailyCosts = dailyCostsResult.rows;
 
-        // 3. Get meal statuses
         const mealStatusesResult = await client.query(
             `SELECT * FROM "MEAL_STATUS" WHERE date BETWEEN $1 AND $2 AND status = 'EAT'`,
             [startDate, endDate]
@@ -250,8 +238,8 @@ router.post('/settle', verifyAdmin, async (req, res) => {
         let totalIngredientCostPoolKHR = 0;
 
         dailyCosts.forEach(cost => {
-            const foodAmt = Number(cost.food_price || 0);
-            const ingAmt = Number(cost.ingredient_price || 0);
+            const foodAmt = Number(cost.food_price || cost.foodPrice || 0);
+            const ingAmt = Number(cost.ingredient_price || cost.ingredientPrice || 0);
             const currency = cost.currency || 'KHR';
             const rate = Number(cost.exchange_rate || DEFAULT_RATE);
 
@@ -259,7 +247,7 @@ router.post('/settle', verifyAdmin, async (req, res) => {
             totalIngredientCostPoolKHR += convertAmount(ingAmt, currency, 'KHR', rate);
         });
 
-        let ingredientCostPerPersonKHR = activeMemberCount > 0 ? totalIngredientCostPoolKHR / activeMemberCount : 0;
+        const ingredientCostPerPersonKHR = activeMemberCount > 0 ? totalIngredientCostPoolKHR / activeMemberCount : 0;
         const settlementResults = [];
 
         for (const member of allMembers) {
@@ -271,7 +259,7 @@ router.post('/settle', verifyAdmin, async (req, res) => {
                 const costDateStr = toDateStr(cost.date);
                 const currency = cost.currency || 'KHR';
                 const rate = Number(cost.exchange_rate || DEFAULT_RATE);
-                const dayFoodPriceKHR = convertAmount(Number(cost.food_price || 0), currency, 'KHR', rate);
+                const dayFoodPriceKHR = convertAmount(Number(cost.food_price || cost.foodPrice || 0), currency, 'KHR', rate);
 
                 const eatersOnThisDay = mealStatuses.filter(meal => {
                     const mealDateStr = toDateStr(meal.date);
@@ -288,70 +276,66 @@ router.post('/settle', verifyAdmin, async (req, res) => {
 
             const totalDueKHR = Math.round(personalFoodCostKHR + memberIngredientCostKHR);
 
-            if (totalDueKHR > 0) {
-                // 4. Calculate member deposit balance in KHR
-                const depRes = await client.query('SELECT type, amount, currency, exchange_rate FROM member_deposits WHERE user_id = $1', [memberId]);
-                let balanceKHR = 0;
+            const depRes = await client.query(
+                'SELECT type, amount FROM member_deposits WHERE user_id = $1',
+                [memberId]
+            );
+            let balanceKHR = 0;
 
-                depRes.rows.forEach(tx => {
-                    const amt = parseFloat(tx.amount);
-                    const txCurrency = tx.currency || 'KHR';
-                    const rate = Number(tx.exchange_rate || DEFAULT_RATE);
-                    const amtKHR = convertAmount(amt, txCurrency, 'KHR', rate);
+            depRes.rows.forEach(tx => {
+                const amt = parseFloat(tx.amount || 0);
+                if (tx.type === 'DEPOSIT') balanceKHR += amt;
+                if (tx.type === 'DEDUCTION') balanceKHR -= amt;
+            });
 
-                    if (tx.type === 'DEPOSIT') balanceKHR += amtKHR;
-                    if (tx.type === 'DEDUCTION') balanceKHR -= amtKHR;
-                });
+            let settlementStatus = 'SUCCESSFULLY_DEDUCTED';
+            let amountToDeductKHR = totalDueKHR;
 
-                let settlementStatus = '';
-                let amountToDeductKHR = totalDueKHR;
-
-                if (balanceKHR >= totalDueKHR) {
-                    settlementStatus = 'SUCCESSFULLY_DEDUCTED';
-                } else {
-                    settlementStatus = 'INSUFFICIENT_DEPOSIT_PARTIAL_OR_DEBT';
-                    amountToDeductKHR = balanceKHR > 0 ? balanceKHR : 0;
-                }
-
-                // 5. Insert deduction transaction if balance > 0
-                if (amountToDeductKHR > 0) {
-                    await client.query(`
-                        INSERT INTO member_deposits (id, user_id, amount, currency, exchange_rate, type, note, created_at)
-                        VALUES (gen_random_uuid(), $1, $2, 'KHR', $3, 'DEDUCTION', $4, NOW())
-                    `, [
-                        memberId,
-                        amountToDeductKHR,
-                        DEFAULT_RATE,
-                        `Settlement for period ${startDate} to ${endDate}`
-                    ]);
-                }
-
-                settlementResults.push({
-                    userId: memberId,
-                    name: member.name,
-                    totalDueKHR,
-                    totalDueUSD: convertAmount(totalDueKHR, 'KHR', 'USD', DEFAULT_RATE),
-                    previousDepositBalanceKHR: Math.round(balanceKHR),
-                    previousDepositBalanceUSD: convertAmount(balanceKHR, 'KHR', 'USD', DEFAULT_RATE),
-                    deductedAmountKHR: Math.round(amountToDeductKHR),
-                    deductedAmountUSD: convertAmount(amountToDeductKHR, 'KHR', 'USD', DEFAULT_RATE),
-                    formattedTotalDueKHR: formatCurrency(totalDueKHR, 'KHR'),
-                    settlementStatus
-                });
+            if (balanceKHR < totalDueKHR) {
+                settlementStatus = 'INSUFFICIENT_DEPOSIT_PARTIAL_OR_DEBT';
+                amountToDeductKHR = balanceKHR > 0 ? balanceKHR : 0;
             }
+
+            if (amountToDeductKHR > 0) {
+                await client.query(`
+                    INSERT INTO member_deposits (id, user_id, amount, type, note, created_at)
+                    VALUES (gen_random_uuid(), $1, $2, 'DEDUCTION', $3, NOW())
+                `, [
+                    memberId,
+                    amountToDeductKHR,
+                    `Settlement for period ${startDate} to ${endDate}`
+                ]);
+            }
+
+            // Record all members in settlementResults regardless of totalDue amount
+            settlementResults.push({
+                userId: memberId,
+                name: member.name,
+                totalDue: totalDueKHR,
+                totalDueKHR,
+                totalDueUSD: convertAmount(totalDueKHR, 'KHR', 'USD', DEFAULT_RATE),
+                previousDepositBalance: Math.round(balanceKHR),
+                previousDepositBalanceKHR: Math.round(balanceKHR),
+                previousDepositBalanceUSD: convertAmount(balanceKHR, 'KHR', 'USD', DEFAULT_RATE),
+                deductedAmount: Math.round(amountToDeductKHR),
+                deductedAmountKHR: Math.round(amountToDeductKHR),
+                deductedAmountUSD: convertAmount(amountToDeductKHR, 'KHR', 'USD', DEFAULT_RATE),
+                formattedTotalDueKHR: formatCurrency(totalDueKHR, 'KHR'),
+                settlementStatus
+            });
         }
 
-        // Record settlement history
         const totalDueAllKHR = settlementResults.reduce((sum, r) => sum + r.totalDueKHR, 0);
+        const settledByUserId = req.user && req.user.id ? req.user.id.toString() : null;
 
         await client.query(`
             INSERT INTO "BILL_SETTLEMENTS"
-                (start_date, end_date, settled_by, total_food_cost, total_ingredient_cost, total_due_all, results)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (start_date, end_date, settled_by, total_food_cost, total_ingredient_cost, total_due_all, results, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
         `, [
             startDate,
             endDate,
-            req.user && req.user.id ? req.user.id : null,
+            settledByUserId,
             totalFoodCostPoolKHR,
             totalIngredientCostPoolKHR,
             totalDueAllKHR,
@@ -359,7 +343,9 @@ router.post('/settle', verifyAdmin, async (req, res) => {
         ]);
 
         await client.query('COMMIT');
-        res.status(200).json({
+
+        return res.status(200).json({
+            success: true,
             message: 'Monthly bill settlement processed successfully',
             period: { startDate, endDate },
             results: settlementResults
@@ -367,23 +353,24 @@ router.post('/settle', verifyAdmin, async (req, res) => {
 
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('Settlement error:', error);
-        res.status(500).json({ error: 'Internal Server Error', message: error.message });
+        console.error('Settlement execution error:', error);
+        return res.status(500).json({ error: 'Internal Server Error', message: error.message });
     } finally {
         client.release();
     }
 });
-
 
 /**
  * @swagger
  * /api/v1/bills/last-settlement:
  *   get:
  *     summary: Get the most recent bill settlement summary with KHR/USD formatting
- *     description: Returns the latest settlement record with full breakdown per member. Restricted to Admin.
  *     tags: [Bills]
  *     security:
  *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Successfully fetched latest settlement record
  */
 router.get('/last-settlement', verifyAdmin, async (req, res) => {
     try {
@@ -410,8 +397,12 @@ router.get('/last-settlement', verifyAdmin, async (req, res) => {
         const ingKHR = Number(row.total_ingredient_cost || 0);
         const dueKHR = Number(row.total_due_all || 0);
 
+        // Ensure results object is parsed correctly if returned as string
+        const parsedResults = typeof row.results === 'string' ? JSON.parse(row.results) : row.results;
+
         res.json({
             ...row,
+            results: parsedResults || [],
             formattedPool: {
                 totalFoodCostKHR: Math.round(foodKHR),
                 totalFoodCostUSD: convertAmount(foodKHR, 'KHR', 'USD', DEFAULT_RATE),
@@ -438,10 +429,12 @@ router.get('/last-settlement', verifyAdmin, async (req, res) => {
  * /api/v1/bills/settlements:
  *   get:
  *     summary: Get bill settlement history with pagination
- *     description: Returns a list of past settlements, most recent first. Restricted to Admin.
  *     tags: [Bills]
  *     security:
  *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Successfully fetched settlement history
  */
 router.get('/settlements', verifyAdmin, async (req, res) => {
     try {
