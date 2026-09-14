@@ -2,13 +2,25 @@ const express = require('express');
 const router = express.Router();
 const db = require('../prismaClient');
 const { verifyAdmin } = require('../middleware/auth.middleware');
+const { convertAmount, formatCurrency } = require('../utils/currencyHelper');
+
+const DEFAULT_RATE = 4000;
+
+/**
+ * Helper to parse dates formatted as YYYY-MM-DD reliably without timezone shifts
+ */
+const toDateStr = (dateVal) => {
+    if (!dateVal) return '';
+    const d = new Date(dateVal);
+    return d.toISOString().slice(0, 10);
+};
 
 /**
  * @swagger
  * /api/v1/bills/summary:
  *   get:
  *     summary: Calculate total cost sharing per member for a specific month or period
- *     description: Automatically calculates food cost and ingredient cost for active members. Restricted to Admin.
+ *     description: Automatically calculates food cost and ingredient cost for active members in KHR and USD. Restricted to Admin.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -32,11 +44,10 @@ const { verifyAdmin } = require('../middleware/auth.middleware');
  *       403:
  *         description: Admin resource access denied
  */
-router.get('/summary', verifyAdmin, async(req, res) => {
+router.get('/summary', verifyAdmin, async (req, res) => {
     try {
         const { startDate, endDate } = req.query;
 
-        // Validate dates
         if (!startDate || !endDate) {
             return res.status(400).json({
                 error: 'Please provide startDate and endDate (YYYY-MM-DD)'
@@ -49,7 +60,6 @@ router.get('/summary', verifyAdmin, async(req, res) => {
             FROM "USERS"
             ORDER BY id ASC
         `);
-
         const allMembers = membersResult.rows;
 
         if (allMembers.length === 0) {
@@ -59,114 +69,80 @@ router.get('/summary', verifyAdmin, async(req, res) => {
             });
         }
 
-        // Only ACTIVE members share ingredient costs
-        const activeMembers = allMembers.filter(
-            member => member.status === 'ACTIVE'
-        );
-
+        const activeMembers = allMembers.filter(m => m.status === 'ACTIVE');
         const activeMemberCount = activeMembers.length;
 
         // 2. Get daily costs for selected period
         const dailyCostsResult = await db.pool.query(
-            `
-            SELECT *
-            FROM "DAILY_FOOD_COST"
-            WHERE date BETWEEN $1 AND $2
-            ORDER BY date ASC
-            `, [startDate, endDate]
+            `SELECT * FROM "DAILY_FOOD_COST" WHERE date BETWEEN $1 AND $2 ORDER BY date ASC`,
+            [startDate, endDate]
         );
-
         const dailyCosts = dailyCostsResult.rows;
 
-        let totalFoodCostPool = 0;
-        let totalIngredientCostPool = 0;
+        let totalFoodCostPoolKHR = 0;
+        let totalIngredientCostPoolKHR = 0;
 
         dailyCosts.forEach(cost => {
-            totalFoodCostPool += Number(cost.food_price || 0);
-            totalIngredientCostPool += Number(cost.ingredient_price || 0);
+            const foodAmt = Number(cost.food_price || 0);
+            const ingAmt = Number(cost.ingredient_price || 0);
+            const currency = cost.currency || 'KHR';
+            const rate = Number(cost.exchange_rate || DEFAULT_RATE);
+
+            totalFoodCostPoolKHR += convertAmount(foodAmt, currency, 'KHR', rate);
+            totalIngredientCostPoolKHR += convertAmount(ingAmt, currency, 'KHR', rate);
         });
 
         // 3. Get EAT meal statuses
         const mealStatusesResult = await db.pool.query(
-            `
-            SELECT *
-            FROM "MEAL_STATUS"
-            WHERE date BETWEEN $1 AND $2
-              AND status = 'EAT'
-            ORDER BY date ASC
-            `, [startDate, endDate]
+            `SELECT * FROM "MEAL_STATUS" WHERE date BETWEEN $1 AND $2 AND status = 'EAT' ORDER BY date ASC`,
+            [startDate, endDate]
         );
-
         const mealStatuses = mealStatusesResult.rows;
 
-        // Count eating days for each member
         const memberEatCounts = {};
-
         allMembers.forEach(member => {
             memberEatCounts[member.id.toString()] = 0;
         });
 
         mealStatuses.forEach(meal => {
             const memberId = meal.member_id.toString();
-
             if (memberEatCounts[memberId] !== undefined) {
                 memberEatCounts[memberId] += 1;
             }
         });
 
-        // 4. Ingredient cost shared by ACTIVE members
-        const ingredientCostPerPerson =
-            activeMemberCount > 0 ?
-            totalIngredientCostPool / activeMemberCount :
-            0;
+        // 4. Ingredient cost shared by ACTIVE members (in KHR)
+        const ingredientCostPerPersonKHR = activeMemberCount > 0
+            ? totalIngredientCostPoolKHR / activeMemberCount
+            : 0;
 
         // 5. Calculate each member's bill
         const memberBillDetails = allMembers.map(member => {
             const memberId = member.id.toString();
+            let personalFoodCostKHR = 0;
+            const memberIngredientCostKHR = member.status === 'ACTIVE' ? ingredientCostPerPersonKHR : 0;
 
-            let personalFoodCost = 0;
-
-            // Only ACTIVE members pay ingredient cost
-            const isEligibleForIngredient =
-                member.status === 'ACTIVE';
-
-            const memberIngredientCost =
-                isEligibleForIngredient ?
-                ingredientCostPerPerson :
-                0;
-
-            // Calculate food cost day by day
             dailyCosts.forEach(cost => {
-                const costDate = new Date(cost.date)
-                    .toISOString()
-                    .slice(0, 10);
+                const costDateStr = toDateStr(cost.date);
+                const currency = cost.currency || 'KHR';
+                const rate = Number(cost.exchange_rate || DEFAULT_RATE);
+                const dayFoodPriceKHR = convertAmount(Number(cost.food_price || 0), currency, 'KHR', rate);
 
                 const eatersOnThisDay = mealStatuses.filter(meal => {
-                    const mealDate = new Date(meal.date)
-                        .toISOString()
-                        .slice(0, 10);
-
-                    return (
-                        mealDate === costDate &&
-                        meal.status === 'EAT'
-                    );
+                    const mealDateStr = toDateStr(meal.date);
+                    return mealDateStr === costDateStr && meal.status === 'EAT';
                 });
 
                 const actualEatCount = eatersOnThisDay.length;
-
-                const ateOnThisDay = eatersOnThisDay.some(
-                    meal => meal.member_id.toString() === memberId
-                );
+                const ateOnThisDay = eatersOnThisDay.some(meal => meal.member_id.toString() === memberId);
 
                 if (ateOnThisDay && actualEatCount > 0) {
-                    personalFoodCost +=
-                        Number(cost.food_price || 0) /
-                        actualEatCount;
+                    personalFoodCostKHR += dayFoodPriceKHR / actualEatCount;
                 }
             });
 
-            const totalOwed =
-                personalFoodCost + memberIngredientCost;
+            const totalOwedKHR = personalFoodCostKHR + memberIngredientCostKHR;
+            const totalOwedUSD = convertAmount(totalOwedKHR, 'KHR', 'USD', DEFAULT_RATE);
 
             return {
                 memberId,
@@ -174,38 +150,42 @@ router.get('/summary', verifyAdmin, async(req, res) => {
                 username: member.username,
                 status: member.status,
                 daysEaten: memberEatCounts[memberId],
-                foodCost: personalFoodCost.toFixed(2),
-                ingredientCost: memberIngredientCost.toFixed(2),
-                totalDue: totalOwed.toFixed(2)
+                foodCostKHR: Math.round(personalFoodCostKHR),
+                foodCostUSD: convertAmount(personalFoodCostKHR, 'KHR', 'USD', DEFAULT_RATE),
+                ingredientCostKHR: Math.round(memberIngredientCostKHR),
+                ingredientCostUSD: convertAmount(memberIngredientCostKHR, 'KHR', 'USD', DEFAULT_RATE),
+                totalDueKHR: Math.round(totalOwedKHR),
+                totalDueUSD: totalOwedUSD,
+                formattedTotalKHR: formatCurrency(totalOwedKHR, 'KHR'),
+                formattedTotalUSD: formatCurrency(totalOwedUSD, 'USD')
             };
         });
 
+        const totalFoodUSD = convertAmount(totalFoodCostPoolKHR, 'KHR', 'USD', DEFAULT_RATE);
+        const totalIngredientUSD = convertAmount(totalIngredientCostPoolKHR, 'KHR', 'USD', DEFAULT_RATE);
+
         // 6. Return summary
         res.json({
-            period: {
-                startDate,
-                endDate
-            },
-
+            period: { startDate, endDate },
             totalMembers: allMembers.length,
-
             activeMembersCount: activeMemberCount,
-
+            exchangeRate: DEFAULT_RATE,
             poolSummary: {
-                totalFoodPrice: totalFoodCostPool.toFixed(2),
-                totalIngredientPrice: totalIngredientCostPool.toFixed(2)
+                totalFoodCostKHR: Math.round(totalFoodCostPoolKHR),
+                totalFoodCostUSD: totalFoodUSD,
+                totalIngredientCostKHR: Math.round(totalIngredientCostPoolKHR),
+                totalIngredientCostUSD: totalIngredientUSD,
+                formattedFoodKHR: formatCurrency(totalFoodCostPoolKHR, 'KHR'),
+                formattedFoodUSD: formatCurrency(totalFoodUSD, 'USD'),
+                formattedIngredientKHR: formatCurrency(totalIngredientCostPoolKHR, 'KHR'),
+                formattedIngredientUSD: formatCurrency(totalIngredientUSD, 'USD')
             },
-
             memberSummaries: memberBillDetails
         });
 
     } catch (error) {
         console.error('GET bill summary error:', error);
-
-        res.status(500).json({
-            error: 'Internal Server Error',
-            message: error.message
-        });
+        res.status(500).json({ error: 'Internal Server Error', message: error.message });
     }
 });
 
@@ -214,8 +194,8 @@ router.get('/summary', verifyAdmin, async(req, res) => {
  * @swagger
  * /api/v1/bills/settle:
  *   post:
- *     summary: Settle bills for a period and deduct from member deposits
- *     description: Automatically calculates totalDue and deducts from member wallet/deposits. Restricted to Admin.
+ *     summary: Settle bills for a period and deduct from member deposits (Multi-Currency Support)
+ *     description: Automatically calculates totalDue in KHR/USD and deducts from member wallet/deposits. Restricted to Admin.
  *     tags: [Bills]
  *     security:
  *       - bearerAuth: []
@@ -235,15 +215,8 @@ router.get('/summary', verifyAdmin, async(req, res) => {
  *               endDate:
  *                 type: string
  *                 example: "2026-09-30"
- *     responses:
- *       200:
- *         description: Bill settlement processed successfully
- *       400:
- *         description: Invalid input data
- *       403:
- *         description: Admin resource access denied
  */
-router.post('/settle', verifyAdmin, async(req, res) => {
+router.post('/settle', verifyAdmin, async (req, res) => {
     const client = await db.pool.connect();
     try {
         const { startDate, endDate } = req.body;
@@ -251,102 +224,125 @@ router.post('/settle', verifyAdmin, async(req, res) => {
             return res.status(400).json({ error: 'Please provide startDate and endDate (YYYY-MM-DD)' });
         }
 
-        await client.query('BEGIN'); // เริ่มต้น Transaction
+        await client.query('BEGIN');
 
         // 1. Get all members
-        const membersResult = await client.query(`
-            SELECT id, name, username, status
-            FROM "USERS"
-            ORDER BY id ASC
-        `);
+        const membersResult = await client.query(`SELECT id, name, username, status FROM "USERS" ORDER BY id ASC`);
         const allMembers = membersResult.rows;
         const activeMembers = allMembers.filter(m => m.status === 'ACTIVE');
         const activeMemberCount = activeMembers.length;
 
         // 2. Get daily costs
         const dailyCostsResult = await client.query(
-            `SELECT * FROM "DAILY_FOOD_COST" WHERE date BETWEEN $1 AND $2 ORDER BY date ASC`, [startDate, endDate]
+            `SELECT * FROM "DAILY_FOOD_COST" WHERE date BETWEEN $1 AND $2 ORDER BY date ASC`,
+            [startDate, endDate]
         );
         const dailyCosts = dailyCostsResult.rows;
 
         // 3. Get meal statuses
         const mealStatusesResult = await client.query(
-            `SELECT * FROM "MEAL_STATUS" WHERE date BETWEEN $1 AND $2 AND status = 'EAT'`, [startDate, endDate]
+            `SELECT * FROM "MEAL_STATUS" WHERE date BETWEEN $1 AND $2 AND status = 'EAT'`,
+            [startDate, endDate]
         );
         const mealStatuses = mealStatusesResult.rows;
 
-        // 🆕 បន្ថែម totalFoodCostPool (មិនធ្លាប់មានពីមុន)
-        let totalFoodCostPool = dailyCosts.reduce((sum, c) => sum + Number(c.food_price || 0), 0);
-        let totalIngredientCostPool = dailyCosts.reduce((sum, c) => sum + Number(c.ingredient_price || 0), 0);
-        let ingredientCostPerPerson = activeMemberCount > 0 ? totalIngredientCostPool / activeMemberCount : 0;
+        let totalFoodCostPoolKHR = 0;
+        let totalIngredientCostPoolKHR = 0;
 
+        dailyCosts.forEach(cost => {
+            const foodAmt = Number(cost.food_price || 0);
+            const ingAmt = Number(cost.ingredient_price || 0);
+            const currency = cost.currency || 'KHR';
+            const rate = Number(cost.exchange_rate || DEFAULT_RATE);
+
+            totalFoodCostPoolKHR += convertAmount(foodAmt, currency, 'KHR', rate);
+            totalIngredientCostPoolKHR += convertAmount(ingAmt, currency, 'KHR', rate);
+        });
+
+        let ingredientCostPerPersonKHR = activeMemberCount > 0 ? totalIngredientCostPoolKHR / activeMemberCount : 0;
         const settlementResults = [];
 
         for (const member of allMembers) {
             const memberId = member.id.toString();
-            let personalFoodCost = 0;
-            const memberIngredientCost = member.status === 'ACTIVE' ? ingredientCostPerPerson : 0;
+            let personalFoodCostKHR = 0;
+            const memberIngredientCostKHR = member.status === 'ACTIVE' ? ingredientCostPerPersonKHR : 0;
 
             dailyCosts.forEach(cost => {
-                const costDate = new Date(cost.date).toISOString().slice(0, 10);
+                const costDateStr = toDateStr(cost.date);
+                const currency = cost.currency || 'KHR';
+                const rate = Number(cost.exchange_rate || DEFAULT_RATE);
+                const dayFoodPriceKHR = convertAmount(Number(cost.food_price || 0), currency, 'KHR', rate);
+
                 const eatersOnThisDay = mealStatuses.filter(meal => {
-                    const mealDate = new Date(meal.date).toISOString().slice(0, 10);
-                    return mealDate === costDate && meal.status === 'EAT';
+                    const mealDateStr = toDateStr(meal.date);
+                    return mealDateStr === costDateStr && meal.status === 'EAT';
                 });
 
                 const actualEatCount = eatersOnThisDay.length;
                 const ateOnThisDay = eatersOnThisDay.some(meal => meal.member_id.toString() === memberId);
 
                 if (ateOnThisDay && actualEatCount > 0) {
-                    personalFoodCost += Number(cost.food_price || 0) / actualEatCount;
+                    personalFoodCostKHR += dayFoodPriceKHR / actualEatCount;
                 }
             });
 
-            const totalDue = personalFoodCost + memberIngredientCost;
+            const totalDueKHR = Math.round(personalFoodCostKHR + memberIngredientCostKHR);
 
-            if (totalDue > 0) {
-                // 4. Get member deposit balance
-                const depRes = await client.query('SELECT type, amount FROM member_deposits WHERE user_id = $1', [memberId]);
-                let balance = 0;
+            if (totalDueKHR > 0) {
+                // 4. Calculate member deposit balance in KHR
+                const depRes = await client.query('SELECT type, amount, currency, exchange_rate FROM member_deposits WHERE user_id = $1', [memberId]);
+                let balanceKHR = 0;
+
                 depRes.rows.forEach(tx => {
                     const amt = parseFloat(tx.amount);
-                    if (tx.type === 'DEPOSIT') balance += amt;
-                    if (tx.type === 'DEDUCTION') balance -= amt;
+                    const txCurrency = tx.currency || 'KHR';
+                    const rate = Number(tx.exchange_rate || DEFAULT_RATE);
+                    const amtKHR = convertAmount(amt, txCurrency, 'KHR', rate);
+
+                    if (tx.type === 'DEPOSIT') balanceKHR += amtKHR;
+                    if (tx.type === 'DEDUCTION') balanceKHR -= amtKHR;
                 });
 
-                let status = '';
-                let amountToDeduct = totalDue;
+                let settlementStatus = '';
+                let amountToDeductKHR = totalDueKHR;
 
-                if (balance >= totalDue) {
-                    status = 'SUCCESSFULLY_DEDUCTED';
+                if (balanceKHR >= totalDueKHR) {
+                    settlementStatus = 'SUCCESSFULLY_DEDUCTED';
                 } else {
-                    status = 'INSUFFICIENT_DEPOSIT_PARTIAL_OR_DEBT';
-                    amountToDeduct = balance > 0 ? balance : 0; // កាត់យកទឹកប្រាក់ដែលមានសិន (បើមាន)
+                    settlementStatus = 'INSUFFICIENT_DEPOSIT_PARTIAL_OR_DEBT';
+                    amountToDeductKHR = balanceKHR > 0 ? balanceKHR : 0;
                 }
 
                 // 5. Insert deduction transaction if balance > 0
-                if (amountToDeduct > 0) {
+                if (amountToDeductKHR > 0) {
                     await client.query(`
-                        INSERT INTO member_deposits (id, user_id, amount, type, note, created_at)
-                        VALUES (gen_random_uuid(), $1, $2, 'DEDUCTION', $3, NOW())
-                    `, [memberId, amountToDeduct, `Settlement for period ${startDate} to ${endDate}`]);
+                        INSERT INTO member_deposits (id, user_id, amount, currency, exchange_rate, type, note, created_at)
+                        VALUES (gen_random_uuid(), $1, $2, 'KHR', $3, 'DEDUCTION', $4, NOW())
+                    `, [
+                        memberId,
+                        amountToDeductKHR,
+                        DEFAULT_RATE,
+                        `Settlement for period ${startDate} to ${endDate}`
+                    ]);
                 }
 
                 settlementResults.push({
                     userId: memberId,
                     name: member.name,
-                    totalDue: totalDue.toFixed(2),
-                    previousDepositBalance: balance.toFixed(2),
-                    deductedAmount: amountToDeduct.toFixed(2),
-                    settlementStatus: status
+                    totalDueKHR,
+                    totalDueUSD: convertAmount(totalDueKHR, 'KHR', 'USD', DEFAULT_RATE),
+                    previousDepositBalanceKHR: Math.round(balanceKHR),
+                    previousDepositBalanceUSD: convertAmount(balanceKHR, 'KHR', 'USD', DEFAULT_RATE),
+                    deductedAmountKHR: Math.round(amountToDeductKHR),
+                    deductedAmountUSD: convertAmount(amountToDeductKHR, 'KHR', 'USD', DEFAULT_RATE),
+                    formattedTotalDueKHR: formatCurrency(totalDueKHR, 'KHR'),
+                    settlementStatus
                 });
             }
         }
 
-        // 🆕🆕🆕 កត់ត្រា settlement history ចូល BILL_SETTLEMENTS (ជានិច្ច) 🆕🆕🆕
-        const totalDueAll = settlementResults.reduce(
-            (sum, r) => sum + Number(r.totalDue), 0
-        );
+        // Record settlement history
+        const totalDueAllKHR = settlementResults.reduce((sum, r) => sum + r.totalDueKHR, 0);
 
         await client.query(`
             INSERT INTO "BILL_SETTLEMENTS"
@@ -356,12 +352,11 @@ router.post('/settle', verifyAdmin, async(req, res) => {
             startDate,
             endDate,
             req.user && req.user.id ? req.user.id : null,
-            totalFoodCostPool,
-            totalIngredientCostPool,
-            totalDueAll,
+            totalFoodCostPoolKHR,
+            totalIngredientCostPoolKHR,
+            totalDueAllKHR,
             JSON.stringify(settlementResults)
         ]);
-        // 🆕🆕🆕 ចប់កូដថ្មី 🆕🆕🆕
 
         await client.query('COMMIT');
         res.status(200).json({
@@ -384,18 +379,13 @@ router.post('/settle', verifyAdmin, async(req, res) => {
  * @swagger
  * /api/v1/bills/last-settlement:
  *   get:
- *     summary: Get the most recent bill settlement summary
+ *     summary: Get the most recent bill settlement summary with KHR/USD formatting
  *     description: Returns the latest settlement record with full breakdown per member. Restricted to Admin.
  *     tags: [Bills]
  *     security:
  *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Latest settlement retrieved
- *       404:
- *         description: No settlement found
  */
-router.get('/last-settlement', verifyAdmin, async(req, res) => {
+router.get('/last-settlement', verifyAdmin, async (req, res) => {
     try {
         const result = await db.pool.query(`
             SELECT bs.id,
@@ -415,7 +405,28 @@ router.get('/last-settlement', verifyAdmin, async(req, res) => {
             return res.status(404).json({ message: 'No settlement history found yet' });
         }
 
-        res.json(result.rows[0]);
+        const row = result.rows[0];
+        const foodKHR = Number(row.total_food_cost || 0);
+        const ingKHR = Number(row.total_ingredient_cost || 0);
+        const dueKHR = Number(row.total_due_all || 0);
+
+        res.json({
+            ...row,
+            formattedPool: {
+                totalFoodCostKHR: Math.round(foodKHR),
+                totalFoodCostUSD: convertAmount(foodKHR, 'KHR', 'USD', DEFAULT_RATE),
+                formattedFoodKHR: formatCurrency(foodKHR, 'KHR'),
+                formattedFoodUSD: formatCurrency(convertAmount(foodKHR, 'KHR', 'USD', DEFAULT_RATE), 'USD'),
+                totalIngredientCostKHR: Math.round(ingKHR),
+                totalIngredientCostUSD: convertAmount(ingKHR, 'KHR', 'USD', DEFAULT_RATE),
+                formattedIngredientKHR: formatCurrency(ingKHR, 'KHR'),
+                formattedIngredientUSD: formatCurrency(convertAmount(ingKHR, 'KHR', 'USD', DEFAULT_RATE), 'USD'),
+                totalDueAllKHR: Math.round(dueKHR),
+                totalDueAllUSD: convertAmount(dueKHR, 'KHR', 'USD', DEFAULT_RATE),
+                formattedDueAllKHR: formatCurrency(dueKHR, 'KHR'),
+                formattedDueAllUSD: formatCurrency(convertAmount(dueKHR, 'KHR', 'USD', DEFAULT_RATE), 'USD')
+            }
+        });
     } catch (error) {
         console.error('GET last settlement error:', error);
         res.status(500).json({ error: 'Internal Server Error', message: error.message });
@@ -431,24 +442,8 @@ router.get('/last-settlement', verifyAdmin, async(req, res) => {
  *     tags: [Bills]
  *     security:
  *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: limit
- *         schema:
- *           type: integer
- *           default: 10
- *         description: Number of records to return
- *       - in: query
- *         name: offset
- *         schema:
- *           type: integer
- *           default: 0
- *         description: Number of records to skip (for pagination)
- *     responses:
- *       200:
- *         description: Settlement history retrieved
  */
-router.get('/settlements', verifyAdmin, async(req, res) => {
+router.get('/settlements', verifyAdmin, async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 10;
         const offset = parseInt(req.query.offset) || 0;
@@ -469,11 +464,23 @@ router.get('/settlements', verifyAdmin, async(req, res) => {
 
         const countResult = await db.pool.query(`SELECT COUNT(*) FROM "BILL_SETTLEMENTS"`);
 
+        const formattedSettlements = result.rows.map(row => {
+            const foodKHR = Number(row.total_food_cost || 0);
+            const ingKHR = Number(row.total_ingredient_cost || 0);
+            const dueKHR = Number(row.total_due_all || 0);
+
+            return {
+                ...row,
+                formattedTotalDueKHR: formatCurrency(dueKHR, 'KHR'),
+                formattedTotalDueUSD: formatCurrency(convertAmount(dueKHR, 'KHR', 'USD', DEFAULT_RATE), 'USD')
+            };
+        });
+
         res.json({
             total: parseInt(countResult.rows[0].count),
             limit,
             offset,
-            settlements: result.rows
+            settlements: formattedSettlements
         });
     } catch (error) {
         console.error('GET settlements history error:', error);
