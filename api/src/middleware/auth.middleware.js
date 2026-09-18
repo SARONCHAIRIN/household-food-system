@@ -8,7 +8,7 @@ const verifyToken = (req, res, next) => {
         return res.status(401).json({ error: 'Access token missing or unauthorized' });
     }
 
-    jwt.verify(token, process.env.JWT_SECRET || 'secret_key', (err, user) => {
+    jwt.verify(token, process.env.JWT_SECRET || 'your_super_secret_key_here', (err, user) => {
         if (err) {
             return res.status(403).json({ error: 'Invalid or expired token' });
         }
