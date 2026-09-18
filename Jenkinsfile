@@ -3,6 +3,8 @@ pipeline {
 
     environment {
         PATH = "/Users/chhairin/.nvm/versions/node/v24.14.1/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+        DATABASE_URL = credentials('household-food-database-url')
     }
 
     stages {
