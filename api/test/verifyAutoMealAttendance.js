@@ -10,6 +10,7 @@ async function runTests() {
 
     const TEST_DATE = '2099-01-01';
 
+
     try {
         // --- STEP 1: Verify Unique Constraint ---
         console.log('Step 1: Ensuring and verifying unique constraint on MEAL_STATUS (member_id, date)...');
@@ -151,14 +152,14 @@ async function runTests() {
     } catch (err) {
         console.error('\n❌ TEST FAILED:', err);
         // Attempt cleanup on failure
-        await db.pool.query(`DELETE FROM "MEAL_STATUS" WHERE date = $1`, [TEST_DATE]).catch(() => {});
+        await db.pool.query(`DELETE FROM "MEAL_STATUS" WHERE date = $1`, [TEST_DATE]).catch(() => { });
         process.exit(1);
     } finally {
         if (typeof origStatusA !== 'undefined' && typeof memberA !== 'undefined') {
-            await db.pool.query(`UPDATE "USERS" SET status = $1 WHERE id = $2`, [origStatusA, memberA.id]).catch(() => {});
+            await db.pool.query(`UPDATE "USERS" SET status = $1 WHERE id = $2`, [origStatusA, memberA.id]).catch(() => { });
         }
         if (typeof origStatusB !== 'undefined' && typeof memberB !== 'undefined') {
-            await db.pool.query(`UPDATE "USERS" SET status = $1 WHERE id = $2`, [origStatusB, memberB.id]).catch(() => {});
+            await db.pool.query(`UPDATE "USERS" SET status = $1 WHERE id = $2`, [origStatusB, memberB.id]).catch(() => { });
         }
         await db.pool.end();
     }
