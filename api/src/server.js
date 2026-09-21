@@ -23,8 +23,6 @@ const userRoutes = require('./routes/users.routes');
 const depositsRoutes = require('./routes/deposits.routes');
 const notificationsRouter = require("./routes/notifications.routes");
 
-app.use("/api/v1/notifications", notificationsRouter);
-
 // --- Import Background Jobs & DB Helpers ---
 const { ensureConstraints } = require('./db/ensureConstraints');
 const { startAutoMealAttendanceJob } = require('./jobs/autoMealAttendance');
@@ -37,6 +35,8 @@ app.use('/api/v1/members', membersRoutes);
 app.use('/api/v1/bills', billSharingRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1', depositsRoutes);
+
+app.use("/api/v1/notifications", notificationsRouter);
 
 
 // --- Swagger Configuration ---
@@ -74,6 +74,10 @@ app.get('/', (req, res) => {
     res.redirect('/swagger-ui');
 });
 
+
+
+
+
 // --- Test Route ---
 app.get('/api/v1/users', async (req, res) => {
     try {
@@ -87,6 +91,14 @@ app.get('/api/v1/users', async (req, res) => {
         console.error(error);
         res.status(500).json({ error: 'Internal Server Error' });
     }
+});
+
+
+app.get("/health", (req, res) => {
+    res.status(200).json({
+        status: "ok",
+        service: "household-food-api",
+    });
 });
 
 
