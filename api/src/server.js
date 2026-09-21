@@ -21,6 +21,9 @@ const mealStatusRoutes = require('./routes/mealStatus.routes');
 const billSharingRoutes = require('./routes/billSharing.routes');
 const userRoutes = require('./routes/users.routes');
 const depositsRoutes = require('./routes/deposits.routes');
+const notificationsRouter = require("./routes/notifications.routes");
+
+app.use("/api/v1/notifications", notificationsRouter);
 
 // --- Import Background Jobs & DB Helpers ---
 const { ensureConstraints } = require('./db/ensureConstraints');
@@ -49,7 +52,7 @@ const swaggerOptions = {
         servers: [{
             url: process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`,
             description: 'Active Server (Local or Render)',
-        }, ],
+        },],
         components: {
             securitySchemes: {
                 bearerAuth: {
@@ -72,7 +75,7 @@ app.get('/', (req, res) => {
 });
 
 // --- Test Route ---
-app.get('/api/v1/users', async(req, res) => {
+app.get('/api/v1/users', async (req, res) => {
     try {
         const users = await prisma.user.findMany();
         const formattedUsers = users.map(user => ({
@@ -89,7 +92,7 @@ app.get('/api/v1/users', async(req, res) => {
 
 
 // បន្ថែម '0.0.0.0' ដើម្បីឱ្យ Render Server ស្គាល់ Host ត្រឹមត្រូវ
-app.listen(PORT, '0.0.0.0', async() => {
+app.listen(PORT, '0.0.0.0', async () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`Swagger UI available at http://localhost:${PORT}/swagger-ui`);
 
