@@ -34,6 +34,7 @@ const { getMessaging } = require("firebase-admin/messaging");
  *       500:
  *         description: Failed to send notification
  */
+
 router.post("/test", async (req, res) => {
     try {
         const { userId } = req.body;
