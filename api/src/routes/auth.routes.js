@@ -31,7 +31,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_key_here';
  *       401:
  *         description: Invalid credentials.
  */
-router.post('/login', async(req, res) => {
+router.post('/login', async (req, res) => {
     try {
         const { username, password } = req.body;
 
@@ -63,27 +63,33 @@ router.post('/login', async(req, res) => {
         }
 
         const accessToken = jwt.sign({
-                id: user.id.toString(),
-                username: user.username,
-                role: user.role
-            },
+            id: user.id.toString(),
+            username: user.username,
+            role: user.role
+        },
             JWT_SECRET, {
-                expiresIn: '1d'
-            }
+            expiresIn: '1d'
+        }
         );
 
         const refreshToken = jwt.sign({
-                id: user.id.toString()
-            },
+            id: user.id.toString()
+        },
             JWT_SECRET, {
-                expiresIn: '7d'
-            }
+            expiresIn: '7d'
+        }
         );
 
         res.json({
             message: 'Login successful',
             accessToken,
-            refreshToken
+            refreshToken,
+            user: {
+                id: user.id.toString(),
+                username: user.username,
+                role: user.role,
+                status: user.status
+            }
         });
 
     } catch (error) {
@@ -131,7 +137,7 @@ router.post('/login', async(req, res) => {
  *       400:
  *         description: Username or email already exists
  */
-router.post('/register', async(req, res) => {
+router.post('/register', async (req, res) => {
     try {
         const {
             name,
@@ -210,12 +216,12 @@ router.post('/register', async(req, res) => {
             )
             RETURNING id, name, username, email, role, status, joined_at
             `, [
-                name,
-                username,
-                email,
-                passwordHash,
-                userRole
-            ]
+            name,
+            username,
+            email,
+            passwordHash,
+            userRole
+        ]
         );
 
         const newUser = insertResult.rows[0];
@@ -224,22 +230,22 @@ router.post('/register', async(req, res) => {
 
         // Create access token
         const accessToken = jwt.sign({
-                id: newUserId,
-                username: newUser.username,
-                role: newUser.role
-            },
+            id: newUserId,
+            username: newUser.username,
+            role: newUser.role
+        },
             JWT_SECRET, {
-                expiresIn: '1d'
-            }
+            expiresIn: '1d'
+        }
         );
 
         // Create refresh token
         const refreshToken = jwt.sign({
-                id: newUserId
-            },
+            id: newUserId
+        },
             JWT_SECRET, {
-                expiresIn: '7d'
-            }
+            expiresIn: '7d'
+        }
         );
 
         res.status(201).json({
