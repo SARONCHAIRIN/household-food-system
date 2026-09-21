@@ -1,7 +1,23 @@
 const express = require('express');
 const router = express.Router();
+
 const db = require('../prismaClient');
 const { verifyAdmin } = require('../middleware/auth.middleware');
+
+/**
+ * @swagger
+ * tags:
+ *   name: Users
+ *   description: User and member management
+ */
+
+
+/**
+ * =========================================================
+ * PATCH /api/v1/users/{id}/status
+ * Admin update member status
+ * =========================================================
+ */
 
 /**
  * @swagger
@@ -9,6 +25,8 @@ const { verifyAdmin } = require('../middleware/auth.middleware');
  *   patch:
  *     summary: Admin update member status
  *     description: Change user status to ACTIVE, INACTIVE, or AWAY.
+ *     tags:
+ *       - Users
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -17,6 +35,7 @@ const { verifyAdmin } = require('../middleware/auth.middleware');
  *         required: true
  *         schema:
  *           type: string
+ *         example: "29"
  *     requestBody:
  *       required: true
  *       content:
@@ -36,21 +55,31 @@ const { verifyAdmin } = require('../middleware/auth.middleware');
  *     responses:
  *       200:
  *         description: Status updated successfully
+ *       400:
+ *         description: Invalid status
+ *       404:
+ *         description: Member not found
+ *       500:
+ *         description: Internal server error
  */
 router.patch('/:id/status', verifyAdmin, async (req, res) => {
     try {
-        const { id } = req.params;
+        // Prisma User.id is BigInt
+        const userId = BigInt(req.params.id);
+
         const { status } = req.body;
 
+        // Validate status
         if (!['ACTIVE', 'INACTIVE', 'AWAY'].includes(status)) {
             return res.status(400).json({
                 error: 'Invalid status. Use ACTIVE, INACTIVE, or AWAY'
             });
         }
 
+        // Check user exists
         const userExists = await db.user.findUnique({
             where: {
-                id: String(id)
+                id: userId
             }
         });
 
@@ -60,12 +89,20 @@ router.patch('/:id/status', verifyAdmin, async (req, res) => {
             });
         }
 
+        console.log('Status update:', {
+            userId: userId.toString(),
+            username: userExists.username,
+            oldStatus: userExists.status,
+            newStatus: status
+        });
+
+        // Update status
         const updatedUser = await db.user.update({
             where: {
-                id: String(id)
+                id: userId
             },
             data: {
-                status
+                status: status
             },
             select: {
                 id: true,
@@ -75,16 +112,19 @@ router.patch('/:id/status', verifyAdmin, async (req, res) => {
                 role: true,
                 status: true,
                 fcmToken: true,
-                joined_at: true,
-                inactive_at: true,
-                created_at: true,
-                updated_at: true
+                joinedAt: true,
+                inactiveAt: true,
+                createdAt: true,
+                updatedAt: true
             }
         });
 
         return res.json({
             message: `Member status updated to ${status} successfully`,
-            updatedUser
+            updatedUser: {
+                ...updatedUser,
+                id: updatedUser.id.toString()
+            }
         });
 
     } catch (error) {
@@ -99,17 +139,27 @@ router.patch('/:id/status', verifyAdmin, async (req, res) => {
 
 
 /**
+ * =========================================================
+ * PATCH /api/v1/users/{id}/fcm-token
+ * Save FCM token
+ * =========================================================
+ */
+
+/**
  * @swagger
  * /api/v1/users/{id}/fcm-token:
  *   patch:
  *     summary: Save FCM token
  *     description: Save the Firebase Cloud Messaging token for a user's browser.
+ *     tags:
+ *       - Users
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
  *         schema:
  *           type: string
+ *         example: "29"
  *     requestBody:
  *       required: true
  *       content:
@@ -125,21 +175,38 @@ router.patch('/:id/status', verifyAdmin, async (req, res) => {
  *     responses:
  *       200:
  *         description: FCM token saved successfully
+ *       400:
+ *         description: FCM token is required
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Internal server error
  */
 router.patch('/:id/fcm-token', async (req, res) => {
     try {
-        const { id } = req.params;
+        // Prisma User.id is BigInt
+        const userId = BigInt(req.params.id);
+
         const { fcmToken } = req.body;
 
+        // Validate FCM token
         if (!fcmToken || typeof fcmToken !== 'string') {
             return res.status(400).json({
                 error: 'FCM token is required'
             });
         }
 
-        const userId = BigInt(id);
+        // Remove unnecessary spaces
+        const cleanToken = fcmToken.trim();
 
-        const userExists = await db.user.findUnique({
+        if (!cleanToken) {
+            return res.status(400).json({
+                error: 'FCM token cannot be empty'
+            });
+        }
+
+        // Check user exists
+        const user = await db.user.findUnique({
             where: {
                 id: userId
             },
@@ -151,24 +218,29 @@ router.patch('/:id/fcm-token', async (req, res) => {
             }
         });
 
-        if (!userExists) {
+        if (!user) {
             return res.status(404).json({
                 error: 'User not found'
             });
         }
 
-        console.log('FCM update:', {
-            userId: userExists.id.toString(),
-            username: userExists.username,
-            currentStatus: userExists.status
-        });
+        console.log('========================================');
+        console.log('FCM TOKEN UPDATE');
+        console.log('========================================');
+        console.log('User ID:', user.id.toString());
+        console.log('Username:', user.username);
+        console.log('Current status:', user.status);
+        console.log('Has old FCM token:', Boolean(user.fcmToken));
+        console.log('New FCM token received:', Boolean(cleanToken));
+        console.log('========================================');
 
+        // Save FCM token only
         const updatedUser = await db.user.update({
             where: {
                 id: userId
             },
             data: {
-                fcmToken: fcmToken
+                fcmToken: cleanToken
             },
             select: {
                 id: true,
@@ -178,7 +250,9 @@ router.patch('/:id/fcm-token', async (req, res) => {
             }
         });
 
-        res.json({
+        console.log('FCM token saved successfully for user:', userId.toString());
+
+        return res.json({
             message: 'FCM token saved successfully',
             user: {
                 ...updatedUser,
@@ -187,9 +261,13 @@ router.patch('/:id/fcm-token', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Error saving FCM token:', error);
+        console.error('========================================');
+        console.error('ERROR SAVING FCM TOKEN');
+        console.error('========================================');
+        console.error(error);
+        console.error('========================================');
 
-        res.status(500).json({
+        return res.status(500).json({
             error: 'Internal Server Error',
             details: error.message
         });
