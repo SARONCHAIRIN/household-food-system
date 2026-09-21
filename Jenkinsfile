@@ -26,6 +26,26 @@ pipeline {
             }
         }
 
+        stage('Setup Firebase') {
+            steps {
+                withCredentials([
+                    file(
+                        credentialsId: 'firebase-service-account',
+                        variable: 'FIREBASE_SERVICE_ACCOUNT'
+                    )
+                ]) {
+                    sh '''
+                        echo "🔥 Setting up Firebase service account..."
+
+                        cp "$FIREBASE_SERVICE_ACCOUNT" api/firebase-service-account.json
+                        chmod 600 api/firebase-service-account.json
+
+                        echo "✅ Firebase service account ready"
+                    '''
+                }
+            }
+        }
+
         stage('Start API') {
             steps {
                 dir('api') {
@@ -43,7 +63,7 @@ pipeline {
                     echo "Waiting for API on port 10000..."
 
                     for i in {1..30}; do
-                        if curl -s http://localhost:10000/health > /dev/null; then
+                        if curl -sf http://localhost:10000/health > /dev/null; then
                             echo "✅ API is ready!"
                             exit 0
                         fi
@@ -53,7 +73,8 @@ pipeline {
 
                     echo "❌ API failed to start."
                     echo "===== API LOG ====="
-                    cat /tmp/household-food-api.log
+                    cat /tmp/household-food-api.log || true
+
                     exit 1
                 '''
             }
@@ -71,10 +92,16 @@ pipeline {
     post {
         always {
             sh '''
+                echo "🧹 Cleaning up..."
+
                 if [ -f /tmp/household-food-api.pid ]; then
-                    kill $(cat /tmp/household-food-api.pid) 2>/dev/null || true
+                    kill "$(cat /tmp/household-food-api.pid)" 2>/dev/null || true
                     rm -f /tmp/household-food-api.pid
                 fi
+
+                rm -f api/firebase-service-account.json
+
+                echo "✅ Cleanup completed"
             '''
         }
     }
