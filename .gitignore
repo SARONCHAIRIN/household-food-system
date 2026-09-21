@@ -47,3 +47,5 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+firebase-service-account.json
+.env
