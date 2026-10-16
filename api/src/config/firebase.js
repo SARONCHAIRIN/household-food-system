@@ -1,21 +1,28 @@
-const admin = require("firebase-admin");
-const fs = require("node:fs");
-const path = require("node:path");
+const {
+    initializeApp,
+    getApps,
+    cert,
+} = require("firebase-admin/app");
 
-function getServiceAccount() {
+const fs = require("fs");
+const path = require("path");
+
+function loadServiceAccount() {
     const credentials = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
-    // Production: Read credentials from Render Environment
+    // Production: Read from Environment Variable
     if (credentials) {
         try {
             return JSON.parse(credentials);
-        } catch {
-            throw new Error("Invalid FIREBASE_SERVICE_ACCOUNT_JSON");
+        } catch (error) {
+            throw new Error(
+                "Invalid FIREBASE_SERVICE_ACCOUNT_JSON format"
+            );
         }
     }
 
-    // Local Development: Read credentials from JSON file
-    const filePath = path.resolve(
+    // Local: Read from JSON File
+    const filePath = path.join(
         __dirname,
         "../../firebase-service-account.json"
     );
@@ -29,10 +36,13 @@ function getServiceAccount() {
     );
 }
 
-if (!admin.apps.length) {
-    admin.initializeApp({
-        credential: admin.credential.cert(getServiceAccount()),
-    });
-}
+const firebaseApp =
+    getApps().length === 0
+        ? initializeApp({
+            credential: cert(loadServiceAccount()),
+        })
+        : getApps()[0];
 
-module.exports = admin;
+console.log("🔥 Firebase Admin initialized");
+
+module.exports = firebaseApp;
